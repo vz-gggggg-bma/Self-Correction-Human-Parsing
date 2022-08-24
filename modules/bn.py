@@ -117,7 +117,7 @@ class InPlaceABNSync(ABN):
 
     def forward(self, x):
         x, _, _ =  inplace_abn_sync(x, self.weight, self.bias, self.running_mean, self.running_var,
-                                   self.training, self.momentum, self.eps, self.activation, self.slope)
+                                   False, self.momentum, self.eps, self.activation, self.slope)
         return x
 
     def __repr__(self):
@@ -128,5 +128,3 @@ class InPlaceABNSync(ABN):
         else:
             rep += ')'
         return rep.format(name=self.__class__.__name__, **self.__dict__)
-
-

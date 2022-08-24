@@ -1,9 +1,11 @@
 from __future__ import absolute_import
 
-from networks.AugmentCE2P import resnet101
+from networks.AugmentCE2P import resnet101, resnet18
+#from networks.backbone.resnet import resnet18
 
 __factory = {
     'resnet101': resnet101,
+    'resnet18' : resnet18
 }
 
 

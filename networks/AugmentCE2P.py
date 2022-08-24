@@ -19,6 +19,8 @@ from torch.nn import functional as F
 # Note here we adopt the InplaceABNSync implementation from https://github.com/mapillary/inplace_abn
 # By default, the InplaceABNSync module contains a BatchNorm Layer and a LeakyReLu layer
 from modules import InPlaceABNSync
+from networks.backbone.resnet import BasicBlock
+from networks.backbone.resnet import resnet18 as resnet18_base
 
 BatchNorm2d = functools.partial(InPlaceABNSync, activation='none')
 
@@ -35,13 +37,57 @@ pretrained_settings = {
             'num_classes': 1000
         }
     },
+    'resnet18': {
+        'imagenet': {
+            'input_space': 'BGR',
+            'input_size': [3, 224, 224],
+            'input_range': [0, 1],
+            'mean': [0.406, 0.456, 0.485],
+            'std': [0.225, 0.224, 0.229],
+            'num_classes': 1000
+        }
+    },
 }
 
 
-def conv3x3(in_planes, out_planes, stride=1):
+def conv3x3(in_planes, out_planes, stride=1, dilation=1, multi_grid=1):
     "3x3 convolution with padding"
     return nn.Conv2d(in_planes, out_planes, kernel_size=3, stride=stride,
-                     padding=1, bias=False)
+                     padding=dilation * multi_grid, dilation=dilation * multi_grid, bias=False)
+
+
+class BasicBlock(nn.Module):
+    expansion = 1
+
+    def __init__(self, inplanes, planes, stride=1, dilation=1, downsample=None, first_dilation=1, multi_grid=1):
+        super(BasicBlock, self).__init__()
+        self.conv1 = conv3x3(inplanes, planes, stride, 1, 1)
+        self.bn1 = BatchNorm2d(planes)
+        self.relu = nn.ReLU(inplace=False)
+        self.relu_inplace = nn.ReLU(inplace=True)
+        self.conv2 = conv3x3(planes, planes, 1, dilation, multi_grid)
+        self.bn2 = BatchNorm2d(planes)
+        self.downsample = downsample
+        self.dilation = dilation
+        self.stride = stride
+
+    def forward(self, x):
+        residual = x
+
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = self.relu(out)
+
+        out = self.conv2(out)
+        #out = self.bn2(out)
+
+        if self.downsample is not None:
+            residual = self.downsample(x)
+
+        out += residual
+        out = self.relu(out)
+
+        return out
 
 
 class Bottleneck(nn.Module):
@@ -213,14 +259,14 @@ class Decoder_Module(nn.Module):
     Parsing Branch Decoder Module.
     """
 
-    def __init__(self, num_classes):
+    def __init__(self, num_classes, conv2_in=256):
         super(Decoder_Module, self).__init__()
         self.conv1 = nn.Sequential(
             nn.Conv2d(512, 256, kernel_size=1, padding=0, dilation=1, bias=False),
             InPlaceABNSync(256)
         )
         self.conv2 = nn.Sequential(
-            nn.Conv2d(256, 48, kernel_size=1, stride=1, padding=0, dilation=1, bias=False),
+            nn.Conv2d(conv2_in, 48, kernel_size=1, stride=1, padding=0, dilation=1, bias=False),
             InPlaceABNSync(48)
         )
         self.conv3 = nn.Sequential(
@@ -262,11 +308,6 @@ class ResNet(nn.Module):
         self.layer2 = self._make_layer(block, 128, layers[1], stride=2)
         self.layer3 = self._make_layer(block, 256, layers[2], stride=2)
         self.layer4 = self._make_layer(block, 512, layers[3], stride=1, dilation=2, multi_grid=(1, 1, 1))
-
-        self.context_encoding = PSPModule(2048, 512)
-
-        self.edge = Edge_Module()
-        self.decoder = Decoder_Module(num_classes)
 
         self.fushion = nn.Sequential(
             nn.Conv2d(1024, 256, kernel_size=1, padding=0, dilation=1, bias=False),
@@ -312,6 +353,22 @@ class ResNet(nn.Module):
         fusion_result = self.fushion(x)
         return [[parsing_result, fusion_result], [edge_result]]
 
+class ResNet101(ResNet):
+    def __init__(self, block, layers, num_classes):
+        super().__init__(block, layers, num_classes)
+        self.context_encoding = PSPModule(2048, 512)
+
+        self.edge = Edge_Module()
+        self.decoder = Decoder_Module(num_classes)
+
+class ResNet18(ResNet):
+    def __init__(self, block, layers, num_classes):
+        super().__init__(block, layers, num_classes)
+        self.context_encoding = PSPModule(512, 512)
+
+        self.edge = Edge_Module([64, 128, 256])
+        self.decoder = Decoder_Module(num_classes, 64)
+
 
 def initialize_pretrained_model(model, settings, pretrained='./models/resnet101-imagenet.pth'):
     model.input_space = settings['input_space']
@@ -331,7 +388,14 @@ def initialize_pretrained_model(model, settings, pretrained='./models/resnet101-
 
 
 def resnet101(num_classes=20, pretrained='./models/resnet101-imagenet.pth'):
-    model = ResNet(Bottleneck, [3, 4, 23, 3], num_classes)
+    model = ResNet101(Bottleneck, [3, 4, 23, 3], num_classes)
     settings = pretrained_settings['resnet101']['imagenet']
     initialize_pretrained_model(model, settings, pretrained)
+    return model
+
+def resnet18(num_classes=20, pretrained='./models/resnet18-imagenet.pth'):
+    #model = resnet18_base(pretrained=False, num_classes=num_classes)
+    model = ResNet18(BasicBlock, [2, 2, 2, 2], num_classes=20)
+    settings = pretrained_settings['resnet18']['imagenet']
+    initialize_pretrained_model(model, settings, None)
     return model
